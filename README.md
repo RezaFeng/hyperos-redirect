@@ -45,6 +45,7 @@ After pushing the project to GitHub:
 2. Run `Build Debug APK`, or trigger it with a push.
 3. Wait for the job to finish.
 4. Download the artifact named `hyperos-media-redirect-debug-apk`.
+5. The APK file inside the artifact is named `hyperos-media-redirect-debug.apk`.
 
 ## LSPosed setup
 
