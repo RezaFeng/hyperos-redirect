@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">HyperOS Media Redirect</string>
+    <string name="module_description">Redirect HyperOS screenshot and screen recording folders via MediaProvider hooks.</string>
+</resources>
