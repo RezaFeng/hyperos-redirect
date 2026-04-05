@@ -1,15 +1,12 @@
-name: Build Debug APK
+name: Release APK
 
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
-  pull_request:
+    tags:
+      - 'v*'
 
 jobs:
-  build-debug:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -27,7 +24,6 @@ jobs:
           java-version: '17'
 
       - name: Ensure stable repo signing key
-        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -45,9 +41,10 @@ jobs:
               -dname "CN=HyperOS Media Redirect, OU=LSPosed, O=RezaFeng, L=Shanghai, S=Shanghai, C=CN"
             git config user.name "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            default_branch="${{ github.event.repository.default_branch }}"
             git add .signing/hyperos-redirect.jks
             git commit -m "Add stable signing key"
-            git push
+            git push origin "HEAD:${default_branch}"
           fi
 
       - name: Set up Gradle 8.7
@@ -61,12 +58,15 @@ jobs:
       - name: Install Android SDK packages
         run: sdkmanager "platforms;android-34" "build-tools;34.0.0"
 
-      - name: Build debug APK
-        run: gradle --no-daemon assembleDebug
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
 
-      - name: Upload debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: hyperos-media-redirect-debug-apk
-          path: app/build/outputs/apk/debug/hyperos-media-redirect-debug.apk
-          if-no-files-found: error
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_name="${GITHUB_REF_NAME}"
+          gh release create "${tag_name}" \
+            app/build/outputs/apk/release/hyperos-media-redirect-release.apk \
+            --title "HyperOS Media Redirect ${tag_name}" \
+            --generate-notes
