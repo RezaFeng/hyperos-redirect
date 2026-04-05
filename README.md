@@ -6,14 +6,18 @@ LSPosed module for rewriting MediaStore save paths on HyperOS.
 
 - Camera apps are allowed to save photos into `DCIM/Camera`
 - Any other app is not allowed to save into `DCIM/*`
-- When a non-camera app targets `DCIM/*`, the path is rewritten to `Pictures/<AppName>/`
+- When a non-camera app targets `DCIM/*`, the path is rewritten by media type:
+- images -> `Pictures/<AppName>/`
+- videos -> `Movies/<AppName>/`
+- audio -> `Music/<AppName>/`
+- other media -> `Pictures/<AppName>/`
 - `<AppName>` uses the resolved application label first, then falls back to the package name
 
 ## Notes about matching
 
 - Camera app detection uses a built-in allowlist plus package-name heuristics
-- "Photo" detection prefers MIME type, then file extension, then MediaStore image URIs
-- If the owner package name cannot be resolved, the module falls back to `Pictures/UnknownApp/`
+- Media type detection prefers MIME type, then file extension, then MediaStore URI shape
+- If the owner package name cannot be resolved, the module skips rewriting instead of forcing `UnknownApp`
 
 ## Strategy
 
@@ -58,7 +62,7 @@ Check at least these cases:
 
 - camera photos still save to `DCIM/Camera`
 - screenshots from other apps move under `Pictures/<AppName>/`
-- recordings from other apps move under `Pictures/<AppName>/`
+- recordings from other apps move under `Movies/<AppName>/`
 - any third-party app trying to write into `DCIM/*` is redirected out of `DCIM`
 
 Optional log filter:
@@ -69,4 +73,4 @@ logcat | grep MediaPathRedirect
 
 ## Important assumption
 
-This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. If you want screenshots to remain in a shared `Pictures/Screenshots` folder while only other apps are grouped by app name, that is a different rule set and should be implemented explicitly.
+This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. It now uses media-type-appropriate top-level directories because Android may reject irrelevant `RELATIVE_PATH` roots for some collections, especially video.

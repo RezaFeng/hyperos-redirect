@@ -45,6 +45,8 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
 
     private static final String DIRECTORY_DCIM_CAMERA = "DCIM/Camera/";
     private static final String DIRECTORY_PICTURES = "Pictures/";
+    private static final String DIRECTORY_MOVIES = "Movies/";
+    private static final String DIRECTORY_MUSIC = "Music/";
     private static final String FALLBACK_APP_FOLDER = "UnknownApp";
 
     private static final String COLUMN_DATA = "_data";
@@ -87,45 +89,43 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
                 }
 
                 String oldRelativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-                String oldDataPath = values.getAsString(COLUMN_DATA);
-                String ownerPackageName = values.getAsString(COLUMN_OWNER_PACKAGE_NAME);
+                String ownerPackageName = resolveOwnerPackageName(param.thisObject, values);
 
-                boolean changed = rewriteForStoragePolicy(values, uri);
+                boolean changed = rewriteForStoragePolicy(values, uri, ownerPackageName);
                 if (!changed) {
                     return;
                 }
 
                 String newRelativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-                String newDataPath = values.getAsString(COLUMN_DATA);
                 log("Redirected owner=" + safe(ownerPackageName)
                         + " uri=" + uri
-                        + " relativePath=" + safe(oldRelativePath) + " -> " + safe(newRelativePath)
-                        + " data=" + safe(oldDataPath) + " -> " + safe(newDataPath));
+                        + " relativePath=" + safe(oldRelativePath) + " -> " + safe(newRelativePath));
             }
         };
 
-        hookAllMethodsSafe(mediaProviderClass, "insert", rewriteHook);
         hookAllMethodsSafe(mediaProviderClass, "insertFile", rewriteHook);
         hookAllMethodsSafe(mediaProviderClass, "ensureFileColumns", rewriteHook);
     }
 
-    private boolean rewriteForStoragePolicy(ContentValues values, Uri uri) {
+    private boolean rewriteForStoragePolicy(ContentValues values, Uri uri, String ownerPackageName) {
         String relativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-        String dataPath = values.getAsString(COLUMN_DATA);
         String primaryDirectory = values.getAsString(COLUMN_PRIMARY_DIRECTORY);
         String secondaryDirectory = values.getAsString(COLUMN_SECONDARY_DIRECTORY);
-        String ownerPackageName = values.getAsString(COLUMN_OWNER_PACKAGE_NAME);
 
         boolean ownerIsCameraApp = isCameraApp(ownerPackageName);
-        boolean imageLikeMedia = isImageLikeMedia(values, uri);
-        boolean targetsDcim = targetsDcim(relativePath, dataPath, primaryDirectory);
+        MediaKind mediaKind = resolveMediaKind(values, uri);
+        boolean targetsDcim = targetsDcim(relativePath, primaryDirectory);
+
+        if (ownerPackageName.isEmpty()) {
+            return false;
+        }
 
         TargetPath targetPath;
-        if (ownerIsCameraApp && imageLikeMedia) {
+        if (ownerIsCameraApp && mediaKind == MediaKind.IMAGE) {
             targetPath = new TargetPath(DIRECTORY_DCIM_CAMERA, "DCIM", "Camera");
         } else if (targetsDcim) {
             String appFolderName = resolveAppFolderName(ownerPackageName);
-            targetPath = new TargetPath(DIRECTORY_PICTURES + appFolderName + "/", "Pictures", appFolderName);
+            targetPath = buildAppScopedTargetPath(mediaKind, appFolderName);
         } else {
             return false;
         }
@@ -134,12 +134,6 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         String rewrittenRelativePath = rewriteRelativePath(relativePath, targetPath.relativePath, targetsDcim);
         if (!equalsNullable(relativePath, rewrittenRelativePath)) {
             values.put(MediaStore.MediaColumns.RELATIVE_PATH, rewrittenRelativePath);
-            changed = true;
-        }
-
-        String rewrittenDataPath = rewriteAbsolutePath(dataPath, targetPath.relativePath);
-        if (!equalsNullable(dataPath, rewrittenDataPath)) {
-            values.put(COLUMN_DATA, rewrittenDataPath);
             changed = true;
         }
 
@@ -154,6 +148,24 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         }
 
         return changed;
+    }
+
+    private String resolveOwnerPackageName(Object mediaProvider, ContentValues values) {
+        String ownerPackageName = values.getAsString(COLUMN_OWNER_PACKAGE_NAME);
+        if (ownerPackageName != null && !ownerPackageName.isEmpty()) {
+            return ownerPackageName;
+        }
+
+        try {
+            Object callingPackage = XposedHelpers.callMethod(mediaProvider, "getCallingPackageUnchecked");
+            if (callingPackage instanceof String) {
+                return (String) callingPackage;
+            }
+        } catch (Throwable throwable) {
+            log("Unable to resolve calling package: " + throwable);
+        }
+
+        return "";
     }
 
     private boolean isCameraApp(String ownerPackageName) {
@@ -173,14 +185,23 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
                 || lower.contains("snapcam");
     }
 
-    private boolean isImageLikeMedia(ContentValues values, Uri uri) {
+    private MediaKind resolveMediaKind(ContentValues values, Uri uri) {
         String mimeType = values.getAsString(MediaStore.MediaColumns.MIME_TYPE);
-        if (mimeType != null && mimeType.toLowerCase(Locale.ROOT).startsWith("image/")) {
-            return true;
+        if (mimeType != null) {
+            String lowerMimeType = mimeType.toLowerCase(Locale.ROOT);
+            if (lowerMimeType.startsWith("image/")) {
+                return MediaKind.IMAGE;
+            }
+            if (lowerMimeType.startsWith("video/")) {
+                return MediaKind.VIDEO;
+            }
+            if (lowerMimeType.startsWith("audio/")) {
+                return MediaKind.AUDIO;
+            }
         }
 
         String displayName = lower(values.getAsString(MediaStore.MediaColumns.DISPLAY_NAME));
-        return displayName.endsWith(".jpg")
+        if (displayName.endsWith(".jpg")
                 || displayName.endsWith(".jpeg")
                 || displayName.endsWith(".png")
                 || displayName.endsWith(".webp")
@@ -188,7 +209,23 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
                 || displayName.endsWith(".heic")
                 || displayName.endsWith(".heif")
                 || displayName.endsWith(".dng")
-                || uriLooksLikeImage(uri);
+                || uriLooksLikeImage(uri)) {
+            return MediaKind.IMAGE;
+        }
+        if (displayName.endsWith(".mp4")
+                || displayName.endsWith(".mkv")
+                || displayName.endsWith(".webm")
+                || displayName.endsWith(".3gp")
+                || uriLooksLikeVideo(uri)) {
+            return MediaKind.VIDEO;
+        }
+        if (displayName.endsWith(".mp3")
+                || displayName.endsWith(".aac")
+                || displayName.endsWith(".wav")
+                || displayName.endsWith(".m4a")) {
+            return MediaKind.AUDIO;
+        }
+        return MediaKind.OTHER;
     }
 
     private boolean uriLooksLikeImage(Uri uri) {
@@ -201,7 +238,17 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
                 || text.contains("image");
     }
 
-    private boolean targetsDcim(String relativePath, String dataPath, String primaryDirectory) {
+    private boolean uriLooksLikeVideo(Uri uri) {
+        if (uri == null) {
+            return false;
+        }
+        String text = lower(uri.toString());
+        return text.contains("/video/")
+                || text.endsWith("/video/media")
+                || text.contains("video");
+    }
+
+    private boolean targetsDcim(String relativePath, String primaryDirectory) {
         String normalizedRelativePath = normalizeRelativePath(relativePath);
         if (normalizedRelativePath.toLowerCase(Locale.ROOT).startsWith("dcim/")) {
             return true;
@@ -211,7 +258,7 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             return true;
         }
 
-        return matchesDataPath(dataPath, "/DCIM/");
+        return false;
     }
 
     private String resolveAppFolderName(String ownerPackageName) {
@@ -276,12 +323,17 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         return sanitized.replaceAll("\\s+", " ");
     }
 
-    private boolean matchesDataPath(String dataPath, String marker) {
-        if (dataPath == null) {
-            return false;
+    private TargetPath buildAppScopedTargetPath(MediaKind mediaKind, String appFolderName) {
+        switch (mediaKind) {
+            case VIDEO:
+                return new TargetPath(DIRECTORY_MOVIES + appFolderName + "/", "Movies", appFolderName);
+            case AUDIO:
+                return new TargetPath(DIRECTORY_MUSIC + appFolderName + "/", "Music", appFolderName);
+            case IMAGE:
+            case OTHER:
+            default:
+                return new TargetPath(DIRECTORY_PICTURES + appFolderName + "/", "Pictures", appFolderName);
         }
-        return dataPath.replace('\\', '/').toLowerCase(Locale.ROOT)
-                .contains(marker.toLowerCase(Locale.ROOT));
     }
 
     private String rewriteRelativePath(String relativePath, String targetRelativePath, boolean replaceDcimPrefix) {
@@ -296,50 +348,6 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             return normalizedTarget;
         }
         return normalizedTarget;
-    }
-
-    private String rewriteAbsolutePath(String dataPath, String targetRelativePath) {
-        if (dataPath == null || dataPath.isEmpty()) {
-            return dataPath;
-        }
-
-        String normalized = dataPath.replace('\\', '/');
-        int storageIndex = normalized.toLowerCase(Locale.ROOT).indexOf("/storage/");
-        int emulatedIndex = normalized.toLowerCase(Locale.ROOT).indexOf("/emulated/");
-        int rootIndex = storageIndex >= 0 ? storageIndex : emulatedIndex;
-        if (rootIndex < 0) {
-            return dataPath;
-        }
-
-        int directorySplit = normalized.lastIndexOf('/');
-        if (directorySplit < 0 || directorySplit == normalized.length() - 1) {
-            return dataPath;
-        }
-
-        int afterVolume = findAfterVolumeIndex(normalized, rootIndex);
-        if (afterVolume < 0 || afterVolume > directorySplit) {
-            return dataPath;
-        }
-
-        String prefix = normalized.substring(0, afterVolume);
-        String fileName = normalized.substring(directorySplit + 1);
-        return prefix + normalizeRelativePath(targetRelativePath) + fileName;
-    }
-
-    private int findAfterVolumeIndex(String absolutePath, int rootIndex) {
-        int firstSlash = absolutePath.indexOf('/', rootIndex + 1);
-        if (firstSlash < 0) {
-            return -1;
-        }
-        int secondSlash = absolutePath.indexOf('/', firstSlash + 1);
-        if (secondSlash < 0) {
-            return -1;
-        }
-        int thirdSlash = absolutePath.indexOf('/', secondSlash + 1);
-        if (thirdSlash < 0) {
-            return -1;
-        }
-        return thirdSlash + 1;
     }
 
     private String normalizeRelativePath(String relativePath) {
@@ -428,5 +436,12 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             this.primaryDirectory = primaryDirectory;
             this.secondaryDirectory = secondaryDirectory;
         }
+    }
+
+    private enum MediaKind {
+        IMAGE,
+        VIDEO,
+        AUDIO,
+        OTHER
     }
 }
