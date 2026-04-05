@@ -21,14 +21,11 @@ LSPosed module for rewriting MediaStore save paths on HyperOS.
 
 ## Strategy
 
-The module hooks the MediaProvider insert flow and rewrites:
+The module hooks `MediaProvider.ensureFileColumns(...)` and rewrites only:
 
 - `relative_path`
-- `_data`
-- `primary_directory`
-- `secondary_directory`
 
-This is usually more stable than hooking a specific HyperOS screenshot or recorder implementation.
+This is intentionally narrow. MediaProvider derives the final file path from `RELATIVE_PATH`, and modifying deprecated internal path columns can break inserts even when the folder gets created.
 
 ## Target processes
 
@@ -48,6 +45,8 @@ After pushing the project to GitHub:
 3. Wait for the job to finish.
 4. Download the artifact named `hyperos-media-redirect-debug-apk`.
 5. The APK file inside the artifact is named `hyperos-media-redirect-debug.apk`.
+
+The workflow also caches the Android debug keystore so future GitHub Actions builds keep the same debug signature.
 
 ## LSPosed setup
 
@@ -74,3 +73,9 @@ logcat | grep MediaPathRedirect
 ## Important assumption
 
 This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. It now uses media-type-appropriate top-level directories because Android may reject irrelevant `RELATIVE_PATH` roots for some collections, especially video.
+
+## Signing note
+
+Stable signing starts from the workflow revision that caches `~/.android/debug.keystore`.
+
+If you already installed an older APK built before that cache existed, Android may refuse an in-place upgrade because the older private key was never persisted by GitHub Actions. In that case, uninstall once, then install the new APK. After that, future workflow builds should remain updatable with the same signature unless the GitHub Actions cache is manually cleared.

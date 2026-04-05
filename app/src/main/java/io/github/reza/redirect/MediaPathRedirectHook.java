@@ -49,10 +49,7 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
     private static final String DIRECTORY_MUSIC = "Music/";
     private static final String FALLBACK_APP_FOLDER = "UnknownApp";
 
-    private static final String COLUMN_DATA = "_data";
     private static final String COLUMN_OWNER_PACKAGE_NAME = "owner_package_name";
-    private static final String COLUMN_PRIMARY_DIRECTORY = "primary_directory";
-    private static final String COLUMN_SECONDARY_DIRECTORY = "secondary_directory";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -103,51 +100,36 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             }
         };
 
-        hookAllMethodsSafe(mediaProviderClass, "insertFile", rewriteHook);
         hookAllMethodsSafe(mediaProviderClass, "ensureFileColumns", rewriteHook);
     }
 
     private boolean rewriteForStoragePolicy(ContentValues values, Uri uri, String ownerPackageName) {
         String relativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-        String primaryDirectory = values.getAsString(COLUMN_PRIMARY_DIRECTORY);
-        String secondaryDirectory = values.getAsString(COLUMN_SECONDARY_DIRECTORY);
 
         boolean ownerIsCameraApp = isCameraApp(ownerPackageName);
         MediaKind mediaKind = resolveMediaKind(values, uri);
-        boolean targetsDcim = targetsDcim(relativePath, primaryDirectory);
+        boolean targetsDcim = targetsDcim(relativePath);
 
         if (ownerPackageName.isEmpty()) {
             return false;
         }
 
-        TargetPath targetPath;
+        String targetRelativePath;
         if (ownerIsCameraApp && mediaKind == MediaKind.IMAGE) {
-            targetPath = new TargetPath(DIRECTORY_DCIM_CAMERA, "DCIM", "Camera");
+            targetRelativePath = DIRECTORY_DCIM_CAMERA;
         } else if (targetsDcim) {
             String appFolderName = resolveAppFolderName(ownerPackageName);
-            targetPath = buildAppScopedTargetPath(mediaKind, appFolderName);
+            targetRelativePath = buildAppScopedTargetRelativePath(mediaKind, appFolderName);
         } else {
             return false;
         }
 
-        boolean changed = false;
-        String rewrittenRelativePath = rewriteRelativePath(relativePath, targetPath.relativePath, targetsDcim);
-        if (!equalsNullable(relativePath, rewrittenRelativePath)) {
-            values.put(MediaStore.MediaColumns.RELATIVE_PATH, rewrittenRelativePath);
-            changed = true;
+        String rewrittenRelativePath = rewriteRelativePath(relativePath, targetRelativePath);
+        if (equalsNullable(relativePath, rewrittenRelativePath)) {
+            return false;
         }
-
-        if (!equalsNullable(primaryDirectory, targetPath.primaryDirectory)) {
-            values.put(COLUMN_PRIMARY_DIRECTORY, targetPath.primaryDirectory);
-            changed = true;
-        }
-
-        if (!equalsNullable(secondaryDirectory, targetPath.secondaryDirectory)) {
-            values.put(COLUMN_SECONDARY_DIRECTORY, targetPath.secondaryDirectory);
-            changed = true;
-        }
-
-        return changed;
+        values.put(MediaStore.MediaColumns.RELATIVE_PATH, rewrittenRelativePath);
+        return true;
     }
 
     private String resolveOwnerPackageName(Object mediaProvider, ContentValues values) {
@@ -248,17 +230,9 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
                 || text.contains("video");
     }
 
-    private boolean targetsDcim(String relativePath, String primaryDirectory) {
+    private boolean targetsDcim(String relativePath) {
         String normalizedRelativePath = normalizeRelativePath(relativePath);
-        if (normalizedRelativePath.toLowerCase(Locale.ROOT).startsWith("dcim/")) {
-            return true;
-        }
-
-        if ("DCIM".equalsIgnoreCase(safe(primaryDirectory))) {
-            return true;
-        }
-
-        return false;
+        return normalizedRelativePath.toLowerCase(Locale.ROOT).startsWith("dcim/");
     }
 
     private String resolveAppFolderName(String ownerPackageName) {
@@ -323,30 +297,25 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         return sanitized.replaceAll("\\s+", " ");
     }
 
-    private TargetPath buildAppScopedTargetPath(MediaKind mediaKind, String appFolderName) {
+    private String buildAppScopedTargetRelativePath(MediaKind mediaKind, String appFolderName) {
         switch (mediaKind) {
             case VIDEO:
-                return new TargetPath(DIRECTORY_MOVIES + appFolderName + "/", "Movies", appFolderName);
+                return DIRECTORY_MOVIES + appFolderName + "/";
             case AUDIO:
-                return new TargetPath(DIRECTORY_MUSIC + appFolderName + "/", "Music", appFolderName);
+                return DIRECTORY_MUSIC + appFolderName + "/";
             case IMAGE:
             case OTHER:
             default:
-                return new TargetPath(DIRECTORY_PICTURES + appFolderName + "/", "Pictures", appFolderName);
+                return DIRECTORY_PICTURES + appFolderName + "/";
         }
     }
 
-    private String rewriteRelativePath(String relativePath, String targetRelativePath, boolean replaceDcimPrefix) {
+    private String rewriteRelativePath(String relativePath, String targetRelativePath) {
         String normalizedTarget = normalizeRelativePath(targetRelativePath);
         if (relativePath == null || relativePath.isEmpty()) {
             return normalizedTarget;
         }
 
-        String normalized = normalizeRelativePath(relativePath);
-        String lower = normalized.toLowerCase(Locale.ROOT);
-        if (replaceDcimPrefix && lower.startsWith("dcim/")) {
-            return normalizedTarget;
-        }
         return normalizedTarget;
     }
 
@@ -424,18 +393,6 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
 
     private static void log(String message) {
         XposedBridge.log(TAG + ": " + message);
-    }
-
-    private static final class TargetPath {
-        final String relativePath;
-        final String primaryDirectory;
-        final String secondaryDirectory;
-
-        TargetPath(String relativePath, String primaryDirectory, String secondaryDirectory) {
-            this.relativePath = relativePath;
-            this.primaryDirectory = primaryDirectory;
-            this.secondaryDirectory = secondaryDirectory;
-        }
     }
 
     private enum MediaKind {
