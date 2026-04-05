@@ -11,8 +11,6 @@ on:
 jobs:
   build-debug:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
 
     steps:
       - name: Checkout source
@@ -26,8 +24,14 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Restore stable signing key
+        id: signing-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .signing/hyperos-redirect.jks
+          key: hyperos-redirect-signing-key-v1
+
       - name: Ensure stable repo signing key
-        if: github.event_name != 'pull_request'
         shell: bash
         run: |
           set -euo pipefail
@@ -43,11 +47,6 @@ jobs:
               -keysize 2048 \
               -validity 36500 \
               -dname "CN=HyperOS Media Redirect, OU=LSPosed, O=RezaFeng, L=Shanghai, S=Shanghai, C=CN"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add .signing/hyperos-redirect.jks
-            git commit -m "Add stable signing key"
-            git push
           fi
 
       - name: Set up Gradle 8.7
@@ -70,3 +69,10 @@ jobs:
           name: hyperos-media-redirect-debug-apk
           path: app/build/outputs/apk/debug/hyperos-media-redirect-debug.apk
           if-no-files-found: error
+
+      - name: Save stable signing key
+        if: steps.signing-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .signing/hyperos-redirect.jks
+          key: hyperos-redirect-signing-key-v1

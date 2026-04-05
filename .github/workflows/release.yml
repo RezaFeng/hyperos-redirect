@@ -23,6 +23,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Restore stable signing key
+        id: signing-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: .signing/hyperos-redirect.jks
+          key: hyperos-redirect-signing-key-v1
+
       - name: Ensure stable repo signing key
         shell: bash
         run: |
@@ -39,12 +46,6 @@ jobs:
               -keysize 2048 \
               -validity 36500 \
               -dname "CN=HyperOS Media Redirect, OU=LSPosed, O=RezaFeng, L=Shanghai, S=Shanghai, C=CN"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            default_branch="${{ github.event.repository.default_branch }}"
-            git add .signing/hyperos-redirect.jks
-            git commit -m "Add stable signing key"
-            git push origin "HEAD:${default_branch}"
           fi
 
       - name: Set up Gradle 8.7
@@ -60,6 +61,13 @@ jobs:
 
       - name: Build release APK
         run: gradle --no-daemon assembleRelease
+
+      - name: Save stable signing key
+        if: steps.signing-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .signing/hyperos-redirect.jks
+          key: hyperos-redirect-signing-key-v1
 
       - name: Create GitHub Release
         env:

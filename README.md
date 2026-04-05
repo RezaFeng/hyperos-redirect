@@ -41,17 +41,17 @@ After pushing the project to GitHub:
 4. Download the artifact named `hyperos-media-redirect-debug-apk`.
 5. The APK file inside the artifact is named `hyperos-media-redirect-debug.apk`.
 
-The repository now uses a persistent keystore file at `.signing/hyperos-redirect.jks` for stable CI signing. The workflow will create and commit it on the first run if it does not already exist.
+The CI workflow now generates a signing keystore once and persists it through the GitHub Actions cache with a fixed key.
 
 ## GitHub Release
 
 The repository also includes `.github/workflows/release.yml`.
 
-Push a tag such as `v1.3.0` to build a release APK and publish a GitHub Release asset:
+Push a tag such as `v1.3.1` to build a release APK and publish a GitHub Release asset:
 
 ```text
-git tag v1.3.0
-git push origin v1.3.0
+git tag v1.3.1
+git push origin v1.3.1
 ```
 
 ## LSPosed setup
@@ -83,6 +83,6 @@ This version treats the new policy as overriding the earlier fixed screenshot an
 
 ## Signing note
 
-Stable signing starts from the workflow revision that uses the repository keystore `.signing/hyperos-redirect.jks`.
+Stable signing starts from the workflow revision that uses a fixed GitHub Actions cache key for the generated signing keystore.
 
-If you already installed an older APK built before the repository keystore existed, Android may still refuse an in-place upgrade because that older private key was never persisted. In that case, uninstall once, then install the new APK. After that, future CI builds and releases should remain updatable with the same signature because the repository keystore is stable.
+If you already installed an older APK built before this stable keystore existed, Android may still refuse an in-place upgrade because that older private key was never persisted. In that case, uninstall once, then install the new APK. After that, future CI builds and releases should remain updatable with the same signature as long as the GitHub Actions cache entry is preserved.
