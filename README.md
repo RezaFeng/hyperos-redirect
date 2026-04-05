@@ -4,6 +4,8 @@ LSPosed module for rewriting MediaStore save paths on HyperOS.
 
 ## Current policy
 
+- The policy only applies to apps that are explicitly selected in LSPosed scope
+- Apps not selected in LSPosed keep their default media save paths
 - Camera apps are allowed to save photos into `DCIM/Camera`
 - Any other app is not allowed to save into `DCIM/*`
 - When a non-camera app targets `DCIM/*`, the path is rewritten by media type:
@@ -21,18 +23,11 @@ LSPosed module for rewriting MediaStore save paths on HyperOS.
 
 ## Strategy
 
-The module hooks `MediaProvider.ensureFileColumns(...)` and rewrites only:
+The module hooks `ContentResolver.insert(...)` inside each LSPosed-scoped app process and rewrites only:
 
 - `relative_path`
 
-This is intentionally narrow. MediaProvider derives the final file path from `RELATIVE_PATH`, and modifying deprecated internal path columns can break inserts even when the folder gets created.
-
-## Target processes
-
-Enable the module for:
-
-- `com.android.providers.media`
-- `com.android.providers.media.module`
+This means LSPosed scope now directly controls which apps are affected. No global provider-side interception is used.
 
 ## GitHub Actions build
 
@@ -52,17 +47,18 @@ The workflow also caches the Android debug keystore so future GitHub Actions bui
 
 1. Install the APK.
 2. Enable the module in LSPosed.
-3. Keep the recommended scopes selected.
-4. Restart the scoped processes or reboot the device.
+3. In scope, select only the apps you want to redirect.
+4. Do not rely on `com.android.providers.media` scope anymore.
+5. Restart the selected apps or reboot the device.
 
 ## Verify
 
 Check at least these cases:
 
-- camera photos still save to `DCIM/Camera`
-- screenshots from other apps move under `Pictures/<AppName>/`
-- recordings from other apps move under `Movies/<AppName>/`
-- any third-party app trying to write into `DCIM/*` is redirected out of `DCIM`
+- a scoped camera app still saves photos to `DCIM/Camera`
+- a scoped screenshot or recording app is redirected by the policy
+- a non-scoped app keeps its default save path
+- any scoped third-party app trying to write into `DCIM/*` is redirected out of `DCIM`
 
 Optional log filter:
 
@@ -72,7 +68,7 @@ logcat | grep MediaPathRedirect
 
 ## Important assumption
 
-This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. It now uses media-type-appropriate top-level directories because Android may reject irrelevant `RELATIVE_PATH` roots for some collections, especially video.
+This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. It also moves enforcement from the provider side to the scoped app side so LSPosed scope is the real allowlist.
 
 ## Signing note
 

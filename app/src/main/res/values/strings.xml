@@ -1,8 +1,4 @@
 <resources>
     <string name="app_name">HyperOS Media Redirect</string>
-    <string name="module_description">Restrict DCIM usage and redirect non-camera app media into Pictures by app name.</string>
-    <string-array name="recommended_scopes">
-        <item>com.android.providers.media</item>
-        <item>com.android.providers.media.module</item>
-    </string-array>
+    <string name="module_description">Redirect DCIM media only for LSPosed-scoped apps, grouped by app name and media type.</string>
 </resources>

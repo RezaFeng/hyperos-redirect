@@ -2,13 +2,14 @@ package io.github.reza.redirect;
 
 import android.app.AndroidAppHelper;
 import android.app.Application;
+import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Bundle;
 import android.provider.MediaStore;
-import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Locale;
@@ -21,10 +22,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 public class MediaPathRedirectHook implements IXposedHookLoadPackage {
     private static final String TAG = "MediaPathRedirect";
-    private static final Set<String> TARGET_PACKAGES = new HashSet<>(Arrays.asList(
-            "com.android.providers.media",
-            "com.android.providers.media.module"
-    ));
     private static final Set<String> CAMERA_PACKAGES = new HashSet<>(Arrays.asList(
             "com.android.camera",
             "com.miui.camera",
@@ -49,82 +46,102 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
     private static final String DIRECTORY_MUSIC = "Music/";
     private static final String FALLBACK_APP_FOLDER = "UnknownApp";
 
-    private static final String COLUMN_OWNER_PACKAGE_NAME = "owner_package_name";
+    private static final String MODULE_PACKAGE = "io.github.reza.redirect";
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (!TARGET_PACKAGES.contains(lpparam.packageName)) {
+        if (lpparam.packageName == null || lpparam.packageName.isEmpty()) {
+            return;
+        }
+        if ("android".equals(lpparam.packageName) || MODULE_PACKAGE.equals(lpparam.packageName)) {
             return;
         }
 
-        log("Loaded into " + lpparam.packageName + " on API " + Build.VERSION.SDK_INT);
-        hookMediaProvider(lpparam.classLoader);
+        log("Loaded into " + lpparam.packageName + " process=" + lpparam.processName + " api=" + Build.VERSION.SDK_INT);
+        hookContentResolverInsert(lpparam.classLoader, lpparam.packageName);
     }
 
-    private void hookMediaProvider(ClassLoader classLoader) {
-        Class<?> mediaProviderClass = XposedHelpers.findClassIfExists(
-                "com.android.providers.media.MediaProvider",
-                classLoader
-        );
-
-        if (mediaProviderClass == null) {
-            log("MediaProvider class not found");
+    private void hookContentResolverInsert(ClassLoader classLoader, final String packageName) {
+        Class<?> contentResolverClass = XposedHelpers.findClassIfExists(ContentResolver.class.getName(), classLoader);
+        if (contentResolverClass == null) {
+            log("ContentResolver class not found for " + packageName);
             return;
         }
 
         XC_MethodHook rewriteHook = new XC_MethodHook() {
             @Override
             protected void beforeHookedMethod(MethodHookParam param) {
-                ContentValues values = findFirst(param.args, ContentValues.class);
-                if (values == null) {
-                    return;
-                }
-
                 Uri uri = findFirst(param.args, Uri.class);
                 if (!isMediaInsertUri(uri)) {
                     return;
                 }
 
-                String oldRelativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-                String ownerPackageName = resolveOwnerPackageName(param.thisObject, values);
+                ContentValues values = findFirst(param.args, ContentValues.class);
+                if (values == null) {
+                    return;
+                }
 
-                boolean changed = rewriteForStoragePolicy(values, uri, ownerPackageName);
+                String oldRelativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
+                if (oldRelativePath == null || oldRelativePath.isEmpty()) {
+                    return;
+                }
+
+                boolean changed = rewriteForStoragePolicy(values, uri, packageName);
                 if (!changed) {
                     return;
                 }
 
                 String newRelativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
-                log("Redirected owner=" + safe(ownerPackageName)
+                log("Redirected package=" + packageName
                         + " uri=" + uri
                         + " relativePath=" + safe(oldRelativePath) + " -> " + safe(newRelativePath));
             }
         };
 
-        hookAllMethodsSafe(mediaProviderClass, "ensureFileColumns", rewriteHook);
+        try {
+            XposedHelpers.findAndHookMethod(
+                    contentResolverClass,
+                    "insert",
+                    Uri.class,
+                    ContentValues.class,
+                    rewriteHook
+            );
+            log("Hooked ContentResolver.insert(Uri, ContentValues) for " + packageName);
+        } catch (Throwable throwable) {
+            log("Failed hook insert(Uri, ContentValues) for " + packageName + ": " + throwable);
+        }
+
+        try {
+            XposedHelpers.findAndHookMethod(
+                    contentResolverClass,
+                    "insert",
+                    Uri.class,
+                    ContentValues.class,
+                    Bundle.class,
+                    rewriteHook
+            );
+            log("Hooked ContentResolver.insert(Uri, ContentValues, Bundle) for " + packageName);
+        } catch (Throwable throwable) {
+            log("Failed hook insert(Uri, ContentValues, Bundle) for " + packageName + ": " + throwable);
+        }
     }
 
-    private boolean rewriteForStoragePolicy(ContentValues values, Uri uri, String ownerPackageName) {
+    private boolean rewriteForStoragePolicy(ContentValues values, Uri uri, String packageName) {
         String relativePath = values.getAsString(MediaStore.MediaColumns.RELATIVE_PATH);
+        if (!targetsDcim(relativePath)) {
+            return false;
+        }
 
-        boolean ownerIsCameraApp = isCameraApp(ownerPackageName);
         MediaKind mediaKind = resolveMediaKind(values, uri);
-        boolean targetsDcim = targetsDcim(relativePath);
-
-        if (ownerPackageName.isEmpty()) {
-            return false;
-        }
-
         String targetRelativePath;
-        if (ownerIsCameraApp && mediaKind == MediaKind.IMAGE) {
+        if (isCameraApp(packageName) && mediaKind == MediaKind.IMAGE) {
             targetRelativePath = DIRECTORY_DCIM_CAMERA;
-        } else if (targetsDcim) {
-            String appFolderName = resolveAppFolderName(ownerPackageName);
-            targetRelativePath = buildAppScopedTargetRelativePath(mediaKind, appFolderName);
         } else {
-            return false;
+            String appFolderName = resolveAppFolderName(packageName);
+            targetRelativePath = buildAppScopedTargetRelativePath(mediaKind, appFolderName);
         }
 
-        String rewrittenRelativePath = rewriteRelativePath(relativePath, targetRelativePath);
+        String rewrittenRelativePath = normalizeRelativePath(targetRelativePath);
         if (equalsNullable(relativePath, rewrittenRelativePath)) {
             return false;
         }
@@ -132,34 +149,15 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         return true;
     }
 
-    private String resolveOwnerPackageName(Object mediaProvider, ContentValues values) {
-        String ownerPackageName = values.getAsString(COLUMN_OWNER_PACKAGE_NAME);
-        if (ownerPackageName != null && !ownerPackageName.isEmpty()) {
-            return ownerPackageName;
-        }
-
-        try {
-            Object callingPackage = XposedHelpers.callMethod(mediaProvider, "getCallingPackageUnchecked");
-            if (callingPackage instanceof String) {
-                return (String) callingPackage;
-            }
-        } catch (Throwable throwable) {
-            log("Unable to resolve calling package: " + throwable);
-        }
-
-        return "";
-    }
-
-    private boolean isCameraApp(String ownerPackageName) {
-        if (ownerPackageName == null || ownerPackageName.isEmpty()) {
+    private boolean isCameraApp(String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
             return false;
         }
-
-        if (CAMERA_PACKAGES.contains(ownerPackageName)) {
+        if (CAMERA_PACKAGES.contains(packageName)) {
             return true;
         }
 
-        String lower = ownerPackageName.toLowerCase(Locale.ROOT);
+        String lower = packageName.toLowerCase(Locale.ROOT);
         return lower.endsWith(".camera")
                 || lower.contains(".camera.")
                 || lower.contains("googlecamera")
@@ -231,18 +229,17 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
     }
 
     private boolean targetsDcim(String relativePath) {
-        String normalizedRelativePath = normalizeRelativePath(relativePath);
-        return normalizedRelativePath.toLowerCase(Locale.ROOT).startsWith("dcim/");
+        return normalizeRelativePath(relativePath).toLowerCase(Locale.ROOT).startsWith("dcim/");
     }
 
-    private String resolveAppFolderName(String ownerPackageName) {
-        String appLabel = resolveApplicationLabel(ownerPackageName);
+    private String resolveAppFolderName(String packageName) {
+        String appLabel = resolveApplicationLabel(packageName);
         String folderName = sanitizeFolderName(appLabel);
         if (!folderName.isEmpty()) {
             return folderName;
         }
 
-        folderName = sanitizeFolderName(ownerPackageName);
+        folderName = sanitizeFolderName(packageName);
         if (!folderName.isEmpty()) {
             return folderName;
         }
@@ -250,8 +247,8 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         return FALLBACK_APP_FOLDER;
     }
 
-    private String resolveApplicationLabel(String ownerPackageName) {
-        if (ownerPackageName == null || ownerPackageName.isEmpty()) {
+    private String resolveApplicationLabel(String packageName) {
+        if (packageName == null || packageName.isEmpty()) {
             return "";
         }
 
@@ -262,11 +259,11 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             }
 
             PackageManager packageManager = application.getPackageManager();
-            ApplicationInfo applicationInfo = packageManager.getApplicationInfo(ownerPackageName, 0);
+            ApplicationInfo applicationInfo = packageManager.getApplicationInfo(packageName, 0);
             CharSequence label = packageManager.getApplicationLabel(applicationInfo);
             return label == null ? "" : label.toString();
         } catch (Throwable throwable) {
-            log("Unable to resolve label for " + ownerPackageName + ": " + throwable);
+            log("Unable to resolve label for " + packageName + ": " + throwable);
             return "";
         }
     }
@@ -310,13 +307,28 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
         }
     }
 
-    private String rewriteRelativePath(String relativePath, String targetRelativePath) {
-        String normalizedTarget = normalizeRelativePath(targetRelativePath);
-        if (relativePath == null || relativePath.isEmpty()) {
-            return normalizedTarget;
+    private boolean isMediaInsertUri(Uri uri) {
+        if (uri == null) {
+            return false;
         }
+        String scheme = uri.getScheme();
+        String authority = uri.getAuthority();
+        return "content".equalsIgnoreCase(safe(scheme))
+                && authority != null
+                && authority.contains("media");
+    }
 
-        return normalizedTarget;
+    @SuppressWarnings("unchecked")
+    private <T> T findFirst(Object[] args, Class<T> expectedClass) {
+        if (args == null) {
+            return null;
+        }
+        for (Object arg : args) {
+            if (expectedClass.isInstance(arg)) {
+                return (T) arg;
+            }
+        }
+        return null;
     }
 
     private String normalizeRelativePath(String relativePath) {
@@ -332,48 +344,6 @@ public class MediaPathRedirectHook implements IXposedHookLoadPackage {
             normalized = normalized + "/";
         }
         return normalized;
-    }
-
-    private boolean isMediaInsertUri(Uri uri) {
-        if (uri == null) {
-            return true;
-        }
-        String authority = uri.getAuthority();
-        return authority != null && authority.contains("media");
-    }
-
-    private void hookAllMethodsSafe(Class<?> targetClass, String methodName, XC_MethodHook hook) {
-        boolean found = false;
-        for (Method method : targetClass.getDeclaredMethods()) {
-            if (method.getName().equals(methodName)) {
-                found = true;
-                break;
-            }
-        }
-
-        if (!found) {
-            return;
-        }
-
-        try {
-            XposedBridge.hookAllMethods(targetClass, methodName, hook);
-            log("Hooked " + methodName);
-        } catch (Throwable throwable) {
-            log("Failed to hook " + methodName + ": " + throwable);
-        }
-    }
-
-    @SuppressWarnings("unchecked")
-    private <T> T findFirst(Object[] args, Class<T> expectedClass) {
-        if (args == null) {
-            return null;
-        }
-        for (Object arg : args) {
-            if (expectedClass.isInstance(arg)) {
-                return (T) arg;
-            }
-        }
-        return null;
     }
 
     private boolean equalsNullable(String left, String right) {
