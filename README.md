@@ -1,20 +1,30 @@
 # HyperOS Media Redirect
 
-Minimal LSPosed module for redirecting HyperOS 3 screenshot and screen recording output folders:
+LSPosed module for rewriting MediaStore save paths on HyperOS.
 
-- `DCIM/Screenshots` -> `Pictures/Screenshots`
-- `DCIM/ScreenRecorder` -> `Movies/ScreenRecorder`
+## Current policy
+
+- Camera apps are allowed to save photos into `DCIM/Camera`
+- Any other app is not allowed to save into `DCIM/*`
+- When a non-camera app targets `DCIM/*`, the path is rewritten to `Pictures/<AppName>/`
+- `<AppName>` uses the resolved application label first, then falls back to the package name
+
+## Notes about matching
+
+- Camera app detection uses a built-in allowlist plus package-name heuristics
+- "Photo" detection prefers MIME type, then file extension, then MediaStore image URIs
+- If the owner package name cannot be resolved, the module falls back to `Pictures/UnknownApp/`
 
 ## Strategy
 
-Instead of hooking a HyperOS-specific screenshot class, this module hooks the MediaProvider insert flow and rewrites:
+The module hooks the MediaProvider insert flow and rewrites:
 
 - `relative_path`
 - `_data`
 - `primary_directory`
 - `secondary_directory`
 
-That is usually more stable across SystemUI screenshots and Xiaomi screen recorder builds.
+This is usually more stable than hooking a specific HyperOS screenshot or recorder implementation.
 
 ## Target processes
 
@@ -22,18 +32,6 @@ Enable the module for:
 
 - `com.android.providers.media`
 - `com.android.providers.media.module`
-
-## Build
-
-1. Open this directory in Android Studio.
-2. Configure your local Android SDK.
-3. Build the `app` module and install the generated APK.
-
-If dependency download from `https://api.xposed.info/` fails, replace the dependency with a local jar:
-
-```gradle
-compileOnly files('libs/api-82.jar')
-```
 
 ## GitHub Actions build
 
@@ -51,15 +49,17 @@ After pushing the project to GitHub:
 
 1. Install the APK.
 2. Enable the module in LSPosed.
-3. Select the target scopes listed above.
+3. Keep the recommended scopes selected.
 4. Restart the scoped processes or reboot the device.
 
 ## Verify
 
-Take one screenshot and one screen recording, then confirm:
+Check at least these cases:
 
-- screenshots are saved to `Pictures/Screenshots`
-- recordings are saved to `Movies/ScreenRecorder`
+- camera photos still save to `DCIM/Camera`
+- screenshots from other apps move under `Pictures/<AppName>/`
+- recordings from other apps move under `Pictures/<AppName>/`
+- any third-party app trying to write into `DCIM/*` is redirected out of `DCIM`
 
 Optional log filter:
 
@@ -67,6 +67,6 @@ Optional log filter:
 logcat | grep MediaPathRedirect
 ```
 
-## Note
+## Important assumption
 
-If a specific HyperOS 3 build bypasses MediaStore and writes a final file path directly inside the screenshot or recorder app, an extra hook inside that app process will be needed. This project is structured as a first-pass module around the more stable MediaProvider layer.
+This version treats the new policy as overriding the earlier fixed screenshot and screen recorder folder rules. If you want screenshots to remain in a shared `Pictures/Screenshots` folder while only other apps are grouped by app name, that is a different rule set and should be implemented explicitly.
